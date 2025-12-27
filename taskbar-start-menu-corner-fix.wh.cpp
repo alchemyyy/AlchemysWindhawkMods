@@ -45,12 +45,12 @@ taskbar has been aquired. A mutex prevents subequent / invalid explorer processe
 
 // ==WindhawkModSettings==
 /*
-- cornerWidth: 100
-  $name: Corner click width
-  $description: How far from the left edge (in pixels) the corner region extends
-- edgeThreshold: 5
-  $name: Edge threshold
-  $description: How close to the screen edge (in pixels) a click must be to trigger the fix
+- edgeThickness: 5
+  $name: Edge thickness
+  $description: Thickness of the L-shaped edge region in pixels
+- edgeLength: 100
+  $name: Edge length
+  $description: How far the horizontal arm of the L extends from the corner in pixels
 - debugLogging: false
   $name: Enable debug logging
   $description: Log click events for debugging
@@ -68,8 +68,8 @@ taskbar has been aquired. A mutex prevents subequent / invalid explorer processe
 
 // Settings
 struct {
-    int cornerWidth;
-    int edgeThreshold;
+    int edgeThickness;
+    int edgeLength;
     bool debugLogging;
 } g_settings;
 
@@ -104,22 +104,22 @@ std::atomic<bool> g_boundsInitialized{false};
 IUIAutomation* g_pAutomation = nullptr;
 std::mutex g_automationMutex;
 
-// Check if point is in Start button corner region (Fitts' Law corner)
+// Check if point is in Start button corner region (L-shaped Fitts' Law corner)
 bool IsInStartCornerRegion(int x, int y) {
     StartButtonBounds bounds = g_startBounds.load();
     if (!bounds.valid) return false;
 
-    int cornerWidth = g_settings.cornerWidth;
-    if (cornerWidth <= 0) cornerWidth = bounds.right + 20;
+    int edgeThickness = g_settings.edgeThickness;
+    if (edgeThickness <= 0) edgeThickness = 5;
 
-    int edgeThreshold = g_settings.edgeThreshold;
-    if (edgeThreshold <= 0) edgeThreshold = 5;
+    int edgeLength = g_settings.edgeLength;
+    if (edgeLength <= 0) edgeLength = bounds.right + 20;
 
     // Must be in general corner area
-    if (!(x >= 0 && x <= cornerWidth && y >= bounds.top)) return false;
+    if (!(x >= 0 && x <= edgeLength && y >= bounds.top)) return false;
 
-    // Only trigger for clicks at the very edge
-    return (x < edgeThreshold) || (y > bounds.bottom - edgeThreshold);
+    // L-shape: left edge (vertical arm) OR bottom edge (horizontal arm)
+    return (x < edgeThickness) || (y > bounds.bottom - edgeThickness);
 }
 
 // Initialize UI Automation
@@ -401,8 +401,8 @@ DWORD WINAPI WorkerThread(LPVOID lpParam) {
 }
 
 void LoadSettings() {
-    g_settings.cornerWidth = Wh_GetIntSetting(L"cornerWidth");
-    g_settings.edgeThreshold = Wh_GetIntSetting(L"edgeThreshold");
+    g_settings.edgeThickness = Wh_GetIntSetting(L"edgeThickness");
+    g_settings.edgeLength = Wh_GetIntSetting(L"edgeLength");
     g_settings.debugLogging = Wh_GetIntSetting(L"debugLogging");
 }
 
