@@ -1,10 +1,11 @@
 // ==WindhawkMod==
-// @id              start-button-corner-fix
-// @name            Start Button Corner Click Fix
+// @id              taskbar-start-menu-corner-fix
+// @name            Start Menu Corner Click Fix
 // @description     Fixes the issue where clicking in the corner of the taskbar doesn't open the Start menu due to sticky corners on multi monitor setups.
 // @version         1.6
 // @author          Alchemy
-// @github          https://github.com/user/alchemyyy
+// @github          https://github.com/alchemyyy
+// @license         MIT
 // @include         explorer.exe
 // @architecture    x86-64
 // @compilerOptions -lole32 -loleaut32 -luser32
@@ -12,7 +13,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Start Button Corner Click Fix
+# Start Menu Corner Click Fix
 
 Fixes an issue on Windows 11 where clicking in the very corner of the taskbar doesn't open the Start menu
 on left-justified taskbars when the start menu is "in a sticky corner".
@@ -32,8 +33,8 @@ UI Automation when the real button doesn't handle the click.
 
 The hook can only be installed on threads within the same process, so only the explorer.exe
 that owns the taskbar will successfully activate the mod. A background worker thread waits
-for the taskbar to appear (without blocking explorer startup), and a mutex prevents race
-conditions when multiple explorer.exe instances start simultaneously.
+for the taskbar to appear (without blocking explorer startup) and shuts itself down when the
+taskbar has been aquired. A mutex prevents subequent / invalid explorer processes from infinitely running this worker.
 
 ## Requirements
 
@@ -80,7 +81,7 @@ HHOOK g_mouseHook = NULL;
 HANDLE g_workerThread = NULL;
 
 // Mutex to indicate an instance has claimed the taskbar
-#define TASKBAR_MUTEX_NAME L"Local\\StartButtonCornerFix_Taskbar"
+#define TASKBAR_MUTEX_NAME L"Local\\TaskbarStartMenuCornerFix"
 HANDLE g_taskbarMutex = NULL;
 
 // For signaling main thread to install hook
@@ -134,13 +135,13 @@ bool InitUIAutomation() {
     return SUCCEEDED(hr) && g_pAutomation;
 }
 
-// Find Start button bounds using UI Automation
-bool FindStartButton() {
-    std::lock_guard<std::mutex> lock(g_automationMutex);
-    if (!g_pAutomation) return false;
+// Helper: Find Start button element via UI Automation (caller must Release)
+// Must be called with g_automationMutex held
+IUIAutomationElement* GetStartButtonElement() {
+    if (!g_pAutomation) return nullptr;
 
     IUIAutomationElement* pRoot = nullptr;
-    if (FAILED(g_pAutomation->GetRootElement(&pRoot)) || !pRoot) return false;
+    if (FAILED(g_pAutomation->GetRootElement(&pRoot)) || !pRoot) return nullptr;
 
     VARIANT varProp;
     varProp.vt = VT_BSTR;
@@ -152,66 +153,49 @@ bool FindStartButton() {
 
     if (FAILED(hr) || !pCondition) {
         pRoot->Release();
-        return false;
+        return nullptr;
     }
 
     IUIAutomationElement* pStartButton = nullptr;
-    hr = pRoot->FindFirst(TreeScope_Descendants, pCondition, &pStartButton);
+    pRoot->FindFirst(TreeScope_Descendants, pCondition, &pStartButton);
     pCondition->Release();
     pRoot->Release();
-
-    if (FAILED(hr) || !pStartButton) return false;
-
-    RECT rect;
-    hr = pStartButton->get_CurrentBoundingRectangle(&rect);
-    pStartButton->Release();
-
-    if (SUCCEEDED(hr) && rect.right > rect.left && rect.bottom > rect.top) {
-        StartButtonBounds bounds;
-        bounds.left = rect.left;
-        bounds.top = rect.top;
-        bounds.right = rect.right;
-        bounds.bottom = rect.bottom;
-        bounds.valid = true;
-        g_startBounds.store(bounds);
-        Wh_Log(L"Start button bounds: L:%d T:%d R:%d B:%d", rect.left, rect.top, rect.right, rect.bottom);
-        return true;
-    }
-    return false;
+    return pStartButton;
 }
 
-// Check if Start menu is open
+// Refresh cached Start button bounds
+bool RefreshStartButtonBounds() {
+    std::lock_guard<std::mutex> lock(g_automationMutex);
+    IUIAutomationElement* pStartButton = GetStartButtonElement();
+    if (!pStartButton) return false;
+
+    RECT rect;
+    HRESULT hr = pStartButton->get_CurrentBoundingRectangle(&rect);
+    pStartButton->Release();
+
+    if (FAILED(hr) || rect.right <= rect.left || rect.bottom <= rect.top) return false;
+
+    StartButtonBounds bounds;
+    bounds.left = rect.left;
+    bounds.top = rect.top;
+    bounds.right = rect.right;
+    bounds.bottom = rect.bottom;
+    bounds.valid = true;
+    g_startBounds.store(bounds);
+    Wh_Log(L"Start button bounds: L:%ld T:%ld R:%ld B:%ld", rect.left, rect.top, rect.right, rect.bottom);
+    return true;
+}
+
+// Check if Start menu is open via toggle state
 bool IsStartMenuOpen() {
     std::lock_guard<std::mutex> lock(g_automationMutex);
-    if (!g_pAutomation) return false;
-
-    IUIAutomationElement* pRoot = nullptr;
-    if (FAILED(g_pAutomation->GetRootElement(&pRoot)) || !pRoot) return false;
-
-    VARIANT varProp;
-    varProp.vt = VT_BSTR;
-    varProp.bstrVal = SysAllocString(L"StartButton");
-
-    IUIAutomationCondition* pCondition = nullptr;
-    HRESULT hr = g_pAutomation->CreatePropertyCondition(UIA_AutomationIdPropertyId, varProp, &pCondition);
-    SysFreeString(varProp.bstrVal);
-
-    if (FAILED(hr) || !pCondition) {
-        pRoot->Release();
-        return false;
-    }
-
-    IUIAutomationElement* pStartButton = nullptr;
-    hr = pRoot->FindFirst(TreeScope_Descendants, pCondition, &pStartButton);
-    pCondition->Release();
-    pRoot->Release();
-
-    if (FAILED(hr) || !pStartButton) return false;
+    IUIAutomationElement* pStartButton = GetStartButtonElement();
+    if (!pStartButton) return false;
 
     bool isOpen = false;
     IUIAutomationTogglePattern* pToggle = nullptr;
-    hr = pStartButton->GetCurrentPatternAs(UIA_TogglePatternId, __uuidof(IUIAutomationTogglePattern), (void**)&pToggle);
-    if (SUCCEEDED(hr) && pToggle) {
+    if (SUCCEEDED(pStartButton->GetCurrentPatternAs(UIA_TogglePatternId,
+            __uuidof(IUIAutomationTogglePattern), (void**)&pToggle)) && pToggle) {
         ToggleState state;
         if (SUCCEEDED(pToggle->get_CurrentToggleState(&state))) {
             isOpen = (state == ToggleState_On);
@@ -222,12 +206,12 @@ bool IsStartMenuOpen() {
     return isOpen;
 }
 
-// Invoke Start menu via UI Automation
-void InvokeStartMenu() {
+// Toggle Start menu via UI Automation
+void ToggleStartMenu() {
     std::lock_guard<std::mutex> lock(g_automationMutex);
-
-    if (!g_pAutomation) {
-        Wh_Log(L"UI Automation not available, using Win key");
+    IUIAutomationElement* pStartButton = GetStartButtonElement();
+    if (!pStartButton) {
+        Wh_Log(L"Start button not found, using Win key fallback");
         INPUT inputs[2] = {};
         inputs[0].type = INPUT_KEYBOARD;
         inputs[0].ki.wVk = VK_LWIN;
@@ -238,43 +222,20 @@ void InvokeStartMenu() {
         return;
     }
 
-    IUIAutomationElement* pRoot = nullptr;
-    if (FAILED(g_pAutomation->GetRootElement(&pRoot)) || !pRoot) return;
-
-    VARIANT varProp;
-    varProp.vt = VT_BSTR;
-    varProp.bstrVal = SysAllocString(L"StartButton");
-
-    IUIAutomationCondition* pCondition = nullptr;
-    HRESULT hr = g_pAutomation->CreatePropertyCondition(UIA_AutomationIdPropertyId, varProp, &pCondition);
-    SysFreeString(varProp.bstrVal);
-
-    if (FAILED(hr) || !pCondition) {
-        pRoot->Release();
-        return;
-    }
-
-    IUIAutomationElement* pStartButton = nullptr;
-    hr = pRoot->FindFirst(TreeScope_Descendants, pCondition, &pStartButton);
-    pCondition->Release();
-    pRoot->Release();
-
-    if (FAILED(hr) || !pStartButton) return;
-
-    // Try Toggle pattern
+    // Try Toggle pattern first
     IUIAutomationTogglePattern* pToggle = nullptr;
-    hr = pStartButton->GetCurrentPatternAs(UIA_TogglePatternId, __uuidof(IUIAutomationTogglePattern), (void**)&pToggle);
-    if (SUCCEEDED(hr) && pToggle) {
+    if (SUCCEEDED(pStartButton->GetCurrentPatternAs(UIA_TogglePatternId,
+            __uuidof(IUIAutomationTogglePattern), (void**)&pToggle)) && pToggle) {
         pToggle->Toggle();
         pToggle->Release();
         pStartButton->Release();
         return;
     }
 
-    // Try Invoke pattern
+    // Fall back to Invoke pattern
     IUIAutomationInvokePattern* pInvoke = nullptr;
-    hr = pStartButton->GetCurrentPatternAs(UIA_InvokePatternId, __uuidof(IUIAutomationInvokePattern), (void**)&pInvoke);
-    if (SUCCEEDED(hr) && pInvoke) {
+    if (SUCCEEDED(pStartButton->GetCurrentPatternAs(UIA_InvokePatternId,
+            __uuidof(IUIAutomationInvokePattern), (void**)&pInvoke)) && pInvoke) {
         pInvoke->Invoke();
         pInvoke->Release();
     }
@@ -289,7 +250,7 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
         if (wParam == WM_MOUSEMOVE) {
             if (!g_boundsInitialized.load()) {
                 g_boundsInitialized.store(true);
-                FindStartButton();
+                RefreshStartButtonBounds();
             }
         }
         else if (wParam == WM_LBUTTONDOWN) {
@@ -307,10 +268,10 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
             bool menuWasOpen = g_menuOpenAtMouseDown.load();
             bool menuIsOpen = IsStartMenuOpen();
 
-            // Only invoke if menu state hasn't changed (real button didn't handle it)
+            // Only toggle if menu state hasn't changed (real button didn't handle it)
             if (menuWasOpen == menuIsOpen) {
                 Wh_Log(L"Corner click at (%d, %d) - toggling Start menu", pMouse->pt.x, pMouse->pt.y);
-                InvokeStartMenu();
+                ToggleStartMenu();
             }
             g_mouseDownInCorner.store(false);
         }
@@ -454,7 +415,7 @@ void CleanupUIAutomation() {
 }
 
 BOOL Wh_ModInit() {
-    Wh_Log(L"Initializing Start Button Corner Fix v1.6...");
+    Wh_Log(L"Initializing...");
 
     LoadSettings();
 
@@ -471,10 +432,6 @@ BOOL Wh_ModInit() {
 
     Wh_Log(L"Worker thread spawned, waiting for taskbar...");
     return TRUE;
-}
-
-void Wh_ModAfterInit() {
-    // Bounds are now refreshed dynamically when mouse enters InputSite
 }
 
 void Wh_ModUninit() {
@@ -504,7 +461,7 @@ void Wh_ModUninit() {
         g_taskbarMutex = NULL;
     }
     CleanupUIAutomation();
-    Wh_Log(L"Start Button Corner Fix uninitialized");
+    Wh_Log(L"Uninitialized");
 }
 
 BOOL Wh_ModSettingsChanged(BOOL* bReload) {
