@@ -2,7 +2,7 @@
 // @id              taskbar-start-menu-corner-fix
 // @name            Start Menu Corner Click Fix
 // @description     Fixes the issue where clicking in the corner of the taskbar doesn't open the Start menu due to sticky corners on multi monitor setups.
-// @version         1.6
+// @version         1.0
 // @author          Alchemy
 // @github          https://github.com/alchemyyy
 // @license         MIT
