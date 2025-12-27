@@ -1,0 +1,23 @@
+{
+  "theme": "",
+  "explorerFrameContainerHeight": 0,
+
+  "controlStyles[0].target": "Microsoft.UI.Xaml.Controls.AppBarButton#backButton",
+  "controlStyles[0].styles[0]": "Margin=0,8,0,0",
+  "controlStyles[0].styles[1]": "Width=37",
+
+  "controlStyles[1].target": "Microsoft.UI.Xaml.Controls.AppBarButton#forwardButton",
+  "controlStyles[1].styles[0]": "Margin=0,8,0,0",
+  "controlStyles[1].styles[1]": "Width=37",
+
+  "controlStyles[2].target": "Microsoft.UI.Xaml.Controls.AppBarButton#upButton",
+  "controlStyles[2].styles[0]": "Margin=0,8,0,0",
+  "controlStyles[2].styles[1]": "Width=37",
+
+  "controlStyles[3].target": "Microsoft.UI.Xaml.Controls.AppBarButton#refreshButton",
+  "controlStyles[3].styles[0]": "Margin=0,8,0,0",
+  "controlStyles[3].styles[1]": "Width=37",
+
+  "resourceVariables[0].variableKey": "",
+  "resourceVariables[0].value": ""
+}
