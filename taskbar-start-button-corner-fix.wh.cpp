@@ -1,7 +1,7 @@
 // ==WindhawkMod==
-// @id              taskbar-start-menu-corner-fix
+// @id              taskbar-start-button-corner-fix
 // @name            Start Menu Corner Click Fix
-// @description     Fixes the issue where clicking in the corner of the taskbar doesn't open the Start menu due to sticky corners on multi monitor setups.
+// @description     Fixes the issue where clicking in the corner of the taskbar doesn't open the Start menu on multi monitor setups.
 // @version         1.0
 // @author          Alchemy
 // @github          https://github.com/alchemyyy
@@ -16,7 +16,7 @@
 # Start Menu Corner Click Fix
 
 Fixes an issue on Windows 11 where clicking in the very corner of the taskbar doesn't open the Start menu
-on left-justified taskbars when the start menu is "in a sticky corner".
+on left-aligned taskbars when the start menu button is "in a sticky corner".
 
 ## The Problem
 
@@ -27,7 +27,7 @@ This seems to be caused by the "sticky corners" feature, and thus only affects m
 
 ## The Solution
 
-This mod installs a thread-specific mouse hook (WH_MOUSE) on the InputSite window's thread.
+This mod installs a thread-specific mouse hook on the InputSite window's thread.
 This hook intercepts mouse clicks at the corner region and invokes the Start menu via
 UI Automation when the real button doesn't handle the click.
 
@@ -48,7 +48,7 @@ taskbar has been aquired. A mutex prevents subequent / invalid explorer processe
 - edgeThickness: 5
   $name: Edge thickness
   $description: Thickness of the L-shaped edge region in pixels
-- edgeLength: 100
+- edgeLength: 5
   $name: Edge length
   $description: How far the horizontal arm of the L extends from the corner in pixels
 - debugLogging: false
@@ -89,37 +89,26 @@ HANDLE g_taskbarMutex = NULL;
 std::atomic<DWORD> g_pendingHookThreadId{0};
 std::atomic<HWND> g_taskbarWnd{NULL};
 
-// Start button bounds
-struct StartButtonBounds {
-    LONG left = 0;
-    LONG top = 0;
-    LONG right = 0;
-    LONG bottom = 0;
-    bool valid = false;
-};
-std::atomic<StartButtonBounds> g_startBounds;
-std::atomic<bool> g_boundsInitialized{false};
-
 // UI Automation
 IUIAutomation* g_pAutomation = nullptr;
 std::mutex g_automationMutex;
 
-// Check if point is in Start button corner region (L-shaped Fitts' Law corner)
-bool IsInStartCornerRegion(int x, int y) {
-    StartButtonBounds bounds = g_startBounds.load();
-    if (!bounds.valid) return false;
-
+// Check if point is in corner region (L-shaped Fitts' Law corner)
+bool IsInCornerRegion(int x, int y) {
     int edgeThickness = g_settings.edgeThickness;
     if (edgeThickness <= 0) edgeThickness = 5;
 
     int edgeLength = g_settings.edgeLength;
-    if (edgeLength <= 0) edgeLength = bounds.right + 20;
+    if (edgeLength <= 0) edgeLength = 5;
 
-    // Must be in general corner area
-    if (!(x >= 0 && x <= edgeLength && y >= bounds.top)) return false;
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+    // Must be in corner area: within edgeLength of left edge, near bottom of screen
+    if (x < 0 || x > edgeLength) return false;
+    if (y < screenHeight - edgeLength) return false;
 
     // L-shape: left edge (vertical arm) OR bottom edge (horizontal arm)
-    return (x < edgeThickness) || (y > bounds.bottom - edgeThickness);
+    return (x < edgeThickness) || (y > screenHeight - edgeThickness);
 }
 
 // Initialize UI Automation
@@ -161,29 +150,6 @@ IUIAutomationElement* GetStartButtonElement() {
     pCondition->Release();
     pRoot->Release();
     return pStartButton;
-}
-
-// Refresh cached Start button bounds
-bool RefreshStartButtonBounds() {
-    std::lock_guard<std::mutex> lock(g_automationMutex);
-    IUIAutomationElement* pStartButton = GetStartButtonElement();
-    if (!pStartButton) return false;
-
-    RECT rect;
-    HRESULT hr = pStartButton->get_CurrentBoundingRectangle(&rect);
-    pStartButton->Release();
-
-    if (FAILED(hr) || rect.right <= rect.left || rect.bottom <= rect.top) return false;
-
-    StartButtonBounds bounds;
-    bounds.left = rect.left;
-    bounds.top = rect.top;
-    bounds.right = rect.right;
-    bounds.bottom = rect.bottom;
-    bounds.valid = true;
-    g_startBounds.store(bounds);
-    Wh_Log(L"Start button bounds: L:%ld T:%ld R:%ld B:%ld", rect.left, rect.top, rect.right, rect.bottom);
-    return true;
 }
 
 // Check if Start menu is open via toggle state
@@ -247,14 +213,8 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0 && lParam) {
         MOUSEHOOKSTRUCT* pMouse = (MOUSEHOOKSTRUCT*)lParam;
 
-        if (wParam == WM_MOUSEMOVE) {
-            if (!g_boundsInitialized.load()) {
-                g_boundsInitialized.store(true);
-                RefreshStartButtonBounds();
-            }
-        }
-        else if (wParam == WM_LBUTTONDOWN) {
-            bool inCorner = IsInStartCornerRegion(pMouse->pt.x, pMouse->pt.y);
+        if (wParam == WM_LBUTTONDOWN) {
+            bool inCorner = IsInCornerRegion(pMouse->pt.x, pMouse->pt.y);
             g_mouseDownInCorner.store(inCorner);
 
             if (inCorner) {
